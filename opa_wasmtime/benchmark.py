@@ -41,7 +41,13 @@ def is_pytest_running():
     return any("pytest" in arg for arg in sys.argv)
 
 
+PYTEST_RUNNING = is_pytest_running()
+
+
 def benchmark(func):
+    if not PYTEST_RUNNING:
+        return func
+
     times: list[float] = []
 
     def wrapper(*args, **kwargs):
@@ -62,7 +68,6 @@ def benchmark(func):
             print(f"{key:<15}{format_time(value):<15}")
         print("=" * 40)
 
-    if is_pytest_running():
-        atexit.register(exit_handler)
+    atexit.register(exit_handler)
 
     return wrapper

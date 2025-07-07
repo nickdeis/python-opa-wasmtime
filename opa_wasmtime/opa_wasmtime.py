@@ -135,7 +135,7 @@ class OPAPolicy:
         self.opa_json_parse = self.get_export("opa_json_parse")
 
         if not self.supports_fastpath:
-            raise RuntimeError(f"ABI Version must be greater than or equal to 2")
+            raise RuntimeError(f"ABI minor Version must be greater than or equal to 2")
 
         self.entrypoints = self._fetch_json(self.get_export("entrypoints")())
 
@@ -210,7 +210,9 @@ class OPAPolicy:
         size = len(json_string)
 
         dest_string_address = self.opa_malloc(size)
-        self.memory.write(self.store, bytearray(json_string), dest_string_address)
+        self.memory.write(
+            store=self.store, value=bytearray(json_string), start=dest_string_address
+        )
 
         dest_json_address = self.opa_json_parse(dest_string_address, size)
 
