@@ -1,1 +1,0 @@
-from .opa_wasm import OPAPolicy
