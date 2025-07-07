@@ -2,7 +2,7 @@ import itertools
 from itertools import repeat
 import json
 from pathlib import Path
-from typing import Union, Tuple
+from typing import Tuple, Union, Callable
 
 from wasmtime import (
     FuncType,
@@ -18,19 +18,7 @@ from wasmtime import (
     Global,
 )
 
-
-import time
-
-
-def benchmark(func):
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        print(f"Benchmark: {func.__name__} took {end_time - start_time:.6f} seconds")
-        return result
-
-    return wrapper
+from opa_wasmtime.benchmark import benchmark
 
 
 i32 = ValType.i32()
@@ -43,8 +31,17 @@ class OPAPolicy:
     module: Module
     instance: Instance
     supports_fastpath: bool
+    base_heap_pointer: int
+    data_heap_pointer: int
+    heap_pointer: int
 
-    def __init__(self, wasm_path, min_memory=2024, max_memory=5120, builtins=None):
+    def __init__(
+        self,
+        wasm_path,
+        min_memory: int = 2024,
+        max_memory: int = 5120,
+        builtins: Union[dict[str, Callable], None] = None,
+    ):
         if not Path(wasm_path).is_file():
             raise ValueError(f"Path: {wasm_path} is not a valid file")
 
@@ -131,6 +128,12 @@ class OPAPolicy:
         abi_minor_version = self.get_export("opa_wasm_abi_minor_version")
         self.supports_fastpath = abi_minor_version >= 2
 
+        self.opa_eval = self.get_export("opa_eval")
+        self.opa_heap_ptr_set = self.get_export("opa_heap_ptr_set")
+        self.opa_heap_ptr_get = self.get_export("opa_heap_ptr_get")
+        self.opa_malloc = self.get_export("opa_malloc")
+        self.opa_json_parse = self.get_export("opa_json_parse")
+
         if not self.supports_fastpath:
             raise RuntimeError(f"ABI Version must be greater than or equal to 2")
 
@@ -144,7 +147,6 @@ class OPAPolicy:
         self.base_heap_pointer = self.get_export("opa_heap_ptr_get")()
         self.data_heap_pointer = self.base_heap_pointer
         self.heap_pointer = self.base_heap_pointer
-        self.opa_eval = self.get_export("opa_eval")
 
     def get_export(self, name: str):
         export = self.exports[name]
@@ -158,24 +160,29 @@ class OPAPolicy:
             return wrap
         return export
 
+    @benchmark
     def evaluate(self, input, entrypoint=0):
-        entrypoint = self._lookup_entrypoint(entrypoint)
+        entrypoint = self.__lookup_entrypoint(entrypoint)
 
         # Before each evaluation, reset the heap pointer to the data_heap_pointer
         self.heap_pointer = self.data_heap_pointer
-        return self._evaluate_fastpath(input, entrypoint)
+        return self.__evaluate_fastpath(input, entrypoint)
 
-    def set_data(self, data):
+    @benchmark
+    def set_data(self, data: dict):
+        """
+        Add context data into the OPA runtime
+        """
         # Reset the heap to the base_heap_pointer when data is changed
-        self.get_export("opa_heap_ptr_set")(self.base_heap_pointer)
+        self.opa_heap_ptr_set(self.base_heap_pointer)
 
         # Perform update of data and pointers
         self.data_address = self._put_json(data)
-        self.data_heap_pointer = self.get_export("opa_heap_ptr_get")()
+        self.data_heap_pointer = self.opa_heap_ptr_get()
         self.heap_pointer = self.data_heap_pointer
 
-    def _evaluate_fastpath(self, input, entrypoint):
-        input_address, input_length = self._put_json_in_memory(input)
+    def __evaluate_fastpath(self, input, entrypoint):
+        input_address, input_length = self.__put_json_in_memory(input)
         result = self.opa_eval(
             0,
             entrypoint,
@@ -202,17 +209,17 @@ class OPAPolicy:
         json_string = json.dumps(value).encode("utf-8")
         size = len(json_string)
 
-        dest_string_address = self.get_export("opa_malloc")(size)
+        dest_string_address = self.opa_malloc(size)
         self.memory.write(self.store, bytearray(json_string), dest_string_address)
 
-        dest_json_address = self.get_export("opa_json_parse")(dest_string_address, size)
+        dest_json_address = self.opa_json_parse(dest_string_address, size)
 
         if dest_json_address == 0:
             raise RuntimeError("Failed to parse JSON Value")
 
         return dest_json_address
 
-    def _put_json_in_memory(self, value) -> tuple[int, int]:
+    def __put_json_in_memory(self, value) -> Tuple[int, int]:
         json_string = json.dumps(value).encode("utf-8")
         input_length = len(json_string)
 
@@ -221,13 +228,22 @@ class OPAPolicy:
         self.heap_pointer = input_address + input_length
         return input_address, input_length
 
-    def _fetch_string_as_bytearray(self, address) -> bytearray:
-        memory_size = self.memory.data_len(self.store)
-        memory_buffer = self.memory.read(self.store, start=address, stop=memory_size)
-        json_string_iterator = itertools.takewhile(
-            bool, memory_buffer
-        )  # Null terminated string
-        return bytearray(json_string_iterator)
+    def __read_from_data_memory(self, address: int) -> bytearray:
+        """
+        Reads memory starting at the given address until a null byte is encountered.
+        """
+        memory_buffer = bytearray()
+        while True:
+            byte = self.memory.read(self.store, start=address, stop=address + 1)
+            if byte == b"\x00":
+                break
+            memory_buffer.extend(byte)
+            address += 1
+        return memory_buffer
+
+    def _fetch_string_as_bytearray(self, address: int) -> bytearray:
+        memory_buffer = self.__read_from_data_memory(address)
+        return bytearray(memory_buffer)
 
     def _dispatch(self, id: int, *args):
         return self._put_json(self.builtins_by_id[id](*args))
@@ -276,7 +292,7 @@ class OPAPolicy:
     def _make_args_for_builtin(self, *addresses):
         return [self._fetch_json(address) for address in addresses]
 
-    def _lookup_entrypoint(self, entrypoint: Union[str, int]) -> int:
+    def __lookup_entrypoint(self, entrypoint: Union[str, int]) -> int:
         if isinstance(entrypoint, int) and entrypoint < len(self.entrypoints):
             return entrypoint
 

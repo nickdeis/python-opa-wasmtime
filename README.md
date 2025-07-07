@@ -2,6 +2,8 @@
 
 This is based off [opa-wasm](https://pypi.org/project/opa-wasm/), which uses wasmer, but this targets wasmtime. This allows you to use OPA WASM binaries in Python versions above 3.10, which is the cutoff for wasmer.
 
+It also appears to run significantly faster due to some optimizations I made and some optimizations in python in general since 3.10.
+
 # Getting Started
 
 ## Install the module
