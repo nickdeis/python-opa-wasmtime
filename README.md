@@ -1,4 +1,4 @@
-# Open Policy Agent WebAssembly SDK for Python
+# OPA WebAssembly SDK for Python based on wasmtime
 
 This is based off [opa-wasm](https://pypi.org/project/opa-wasm/), which uses wasmer, but this targets wasmtime. This allows you to use OPA WASM binaries in Python versions above 3.10, which is the cutoff for wasmer.
 
@@ -54,7 +54,3 @@ Which compiles the `example.rego` policy file with the result set to
 binary included.
 
 See `opa build --help` for more details.
-
-## Credits
-
-This project was inspired by the equivalent NPM Module [@open-policy-agent/opa-wasm](https://github.com/open-policy-agent/npm-opa-wasm)
