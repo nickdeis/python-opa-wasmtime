@@ -59,6 +59,8 @@ def benchmark(func):
         return result
 
     def exit_handler():
+        if not times:
+            return
         stats = get_benchmark_stats(times)
         print(f"\nBenchmark stats for {func.__name__}")
         print("=" * 40)
